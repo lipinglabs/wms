@@ -8,7 +8,7 @@ const NODE = process.execPath;
 const APP = path.join(__dirname, 'app');
 const suites = process.argv.slice(2).length
   ? process.argv.slice(2)
-  : ['test-v2.js', 'test-v2b.js', 'test-v3.js', 'test-v4.js', 'test-v5.js', 'test-v6.js', 'test-v7.js', 'test-v8.js', 'test-v9.js', 'test-v10.js', 'test-v11.js', 'test-v12.js'];
+  : ['test-v2.js', 'test-v2b.js', 'test-v3.js', 'test-v4.js', 'test-v5.js', 'test-v6.js', 'test-v7.js', 'test-v8.js', 'test-v9.js', 'test-v10.js', 'test-v11.js', 'test-v12.js', 'test-v13.js'];
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 

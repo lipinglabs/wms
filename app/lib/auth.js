@@ -12,7 +12,7 @@ const PERM_KEYS = [
   'export.xlsx',
   'scope.all',
   'base.project', 'base.major', 'base.team',
-  'sys.role', 'sys.user',
+  'sys.role', 'sys.user', 'sys.log',
   'doc.admin',
 ];
 
@@ -37,6 +37,7 @@ const PERM_LABELS = {
   'base.team': '施工队伍管理',
   'sys.role': '角色与授权',
   'sys.user': '用户与项目分配',
+  'sys.log': '系统日志（登录与操作记录）',
   'doc.admin': '撤改 / 作废已提交单据',
 };
 
@@ -47,7 +48,7 @@ const PERM_GROUPS = [
   { title: '退料', keys: ['ret.create', 'ret.view', 'ret.items'] },
   { title: '查询与导出', keys: ['stock.view', 'export.xlsx', 'scope.all'] },
   { title: '基础档案', keys: ['base.project', 'base.major', 'base.team'] },
-  { title: '系统', keys: ['sys.role', 'sys.user', 'doc.admin'] },
+  { title: '系统', keys: ['sys.role', 'sys.user', 'sys.log', 'doc.admin'] },
 ];
 
 const ROLE_PRESETS = {

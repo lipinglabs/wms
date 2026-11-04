@@ -48,6 +48,7 @@ function navItems(user) {
     { href: '/teams', label: '施工队伍', icon: '⛃', perm: 'base.team' },
     { href: '/roles', label: '角色权限', icon: '⚿', perm: 'sys.role' },
     { href: '/users', label: '用户', icon: '☺', perm: 'sys.user' },
+    { href: '/logs', label: '日志', icon: '☷', perm: 'sys.log' },
   ];
   return items.filter((i) => !i.perm || can(user, i.perm));
 }

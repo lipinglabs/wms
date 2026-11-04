@@ -6,6 +6,7 @@ const U = require('./ui');
 const { parseImport, TEMPLATE_HEADER } = require('./sheet');
 const { buildXlsx } = require('./xlsx');
 const idem = require('./idem');
+const audit = require('./audit');
 
 const q1 = (v) => (Array.isArray(v) ? v[0] : v) || '';
 const toNum = (v) => {
@@ -82,7 +83,15 @@ function conflictPage(user, live, token) {
 
 function handleLogin(ctx) {
   const g = ctx.throttle;
-  if (g && !g.ok(ctx.ip)) return ctx.html(loginPage(ctx, '尝试次数过多，请 5 分钟后再试'), 429);
+  if (g && !g.ok(ctx.ip)) {
+    audit.write({
+      category: 'auth', action: 'login_locked', action_name: '登录受限', result: 'fail',
+      username: String(q1(ctx.body.username) || '').trim() || null,
+      detail: '同一 IP 尝试次数过多，已临时锁定',
+      ip: ctx.ip,
+    });
+    return ctx.html(loginPage(ctx, '尝试次数过多，请 5 分钟后再试'), 429);
+  }
 
   /* 第二步：用户在确认页点了"改为当前登录" */
   const confirm = String(q1(ctx.body.confirm) || '').trim();
@@ -95,6 +104,10 @@ function handleLogin(ctx) {
     kickOthers(u.id);
     const token = createSession(u.id, { ip: ctx.ip });
     ctx.setCookie('sid', token, { maxAge: 7 * 86400 });
+    audit.write({
+      category: 'auth', action: 'login', action_name: '登录', result: 'ok',
+      user_id: u.id, username: u.username, user_name: u.name, detail: '登录系统（确认顶替其他会话）', ip: ctx.ip,
+    });
     return ctx.redirect('/');
   }
 
@@ -104,6 +117,12 @@ function handleLogin(ctx) {
   if (!user || !verifyPassword(password, user.password)) {
     if (g) g.fail(ctx.ip);
     const left = g ? g.remaining(ctx.ip) : 0;
+    audit.write({
+      category: 'auth', action: 'login_fail', action_name: '登录失败', result: 'fail',
+      user_id: user ? user.id : null, username: username || null,
+      detail: user ? '密码不正确' : '账号不存在或已停用',
+      ip: ctx.ip,
+    });
     return ctx.html(loginPage(ctx, '账号或密码不正确' + (left <= 2 && left > 0 ? `（再错 ${left} 次将锁定 5 分钟）` : '')), 401);
   }
   if (g) g.reset(ctx.ip);
@@ -123,6 +142,10 @@ function handleLogin(ctx) {
 
   const token = createSession(user.id, { ip: ctx.ip });
   ctx.setCookie('sid', token, { maxAge: 7 * 86400 });
+  audit.write({
+    category: 'auth', action: 'login', action_name: '登录', result: 'ok',
+    user_id: user.id, username: user.username, user_name: user.name, detail: '登录系统', ip: ctx.ip,
+  });
   return ctx.redirect('/');
 }
 
@@ -2403,6 +2426,128 @@ function saveUser(ctx) {
   return ctx.flash('/users', '已保存');
 }
 
+/* ============ 系统日志（仅管理员） ============ */
+function logsPage(ctx) {
+  const cat = String(q1(ctx.query.cat) || '').trim(); // '' | auth | op
+  const state = String(q1(ctx.query.st) || '').trim(); // '' | ok | fail
+  const uid = Number(q1(ctx.query.user) || 0);
+  const q = String(q1(ctx.query.q) || '').trim();
+  const from = q1(ctx.query.from) || '';
+  const to = q1(ctx.query.to) || '';
+  const pageNo = Math.max(1, Math.floor(Number(q1(ctx.query.page) || 1)) || 1);
+  const SIZE = 100;
+
+  const where = [];
+  const args = [];
+  if (cat === 'auth' || cat === 'op') { where.push('category = ?'); args.push(cat); }
+  if (state === 'fail') where.push("result = 'fail'");
+  if (state === 'ok') where.push("(result IS NULL OR result <> 'fail')");
+  if (uid) { where.push('user_id = ?'); args.push(uid); }
+  if (from) { where.push('substr(created_at,1,10) >= ?'); args.push(from); }
+  if (to) { where.push('substr(created_at,1,10) <= ?'); args.push(to); }
+  if (q) {
+    where.push('(detail LIKE ? OR target LIKE ? OR username LIKE ? OR user_name LIKE ? OR ip LIKE ?)');
+    const like = `%${q}%`;
+    args.push(like, like, like, like, like);
+  }
+
+  const cnt = audit.summary(where, args);
+  const total = Number(cnt.total || 0);
+  const pages = Math.max(1, Math.ceil(total / SIZE));
+  const cur = Math.min(pageNo, pages);
+  const rows = all(
+    `SELECT * FROM audit_logs ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY created_at DESC, id DESC LIMIT ${SIZE} OFFSET ${(cur - 1) * SIZE}`,
+    ...args
+  );
+
+  const users = all('SELECT id, name, username FROM users ORDER BY id');
+  const link = (patch) => {
+    const sp = new URLSearchParams();
+    if (cat) sp.set('cat', cat);
+    if (state) sp.set('st', state);
+    if (uid) sp.set('user', String(uid));
+    if (q) sp.set('q', q);
+    if (from) sp.set('from', from);
+    if (to) sp.set('to', to);
+    for (const [k, v] of Object.entries(patch || {})) {
+      if (v) sp.set(k, String(v));
+      else sp.delete(k);
+    }
+    const s = sp.toString();
+    return '/logs' + (s ? '?' + s : '');
+  };
+
+  const catTag = (r) =>
+    r.category === 'auth' ? '<span class="badge ok">登录</span>' : '<span class="badge">操作</span>';
+  const resultTag = (r) => (r.result === 'fail' ? '<span class="badge draft">失败</span>' : '');
+  const srcTag = (r) => (r.src === 'backfill' ? '<span class="badge backfill">补录</span>' : '');
+
+  const body = `
+  ${msgBar(ctx)}
+  <section class="panel">
+    <form class="toolbar" method="get" action="/logs">
+      <select name="cat">
+        <option value="">全部类别</option>
+        <option value="auth"${cat === 'auth' ? ' selected' : ''}>登录</option>
+        <option value="op"${cat === 'op' ? ' selected' : ''}>操作</option>
+      </select>
+      <select name="st">
+        <option value="">全部结果</option>
+        <option value="ok"${state === 'ok' ? ' selected' : ''}>成功</option>
+        <option value="fail"${state === 'fail' ? ' selected' : ''}>失败</option>
+      </select>
+      ${U.select('user', users.map((u) => ({ value: u.id, label: `${u.name}（${u.username}）` })), uid, { placeholder: '全部人员' })}
+      <input type="date" name="from" value="${U.esc(from)}"> <span class="muted">至</span> <input type="date" name="to" value="${U.esc(to)}">
+      <input name="q" value="${U.esc(q)}" placeholder="单号 / 详情 / 账号 / IP">
+      <button class="btn">查询</button>
+      <a class="btn ghost" href="/logs">重置</a>
+    </form>
+  </section>
+  <section class="panel">
+    <h2>日志记录 <small class="muted">共 ${total} 条${
+      total ? `｜登录 ${Number(cnt.auth || 0)}｜操作 ${Number(cnt.op || 0)}｜失败 ${Number(cnt.fail || 0)}` : ''
+    }</small></h2>
+    ${U.table(
+      [
+        { label: '时间', width: '146px' },
+        { label: '类别', width: '112px' },
+        { label: '操作人', width: '152px' },
+        { label: '操作', width: '118px' },
+        { label: '对象', width: '186px' },
+        { label: '详情' },
+        { label: 'IP', width: '118px' },
+      ],
+      rows.map((r) => [
+        `<span class="nowrap">${U.esc(r.created_at || '')}</span>`,
+        `<span class="tags">${catTag(r)}${resultTag(r)}${srcTag(r)}</span>`,
+        `${U.esc(r.user_name || '—')}<br><small class="op-sub">${U.esc(r.username || '')}${
+          r.role_name ? ' · ' + U.esc(r.role_name) : ''
+        }</small>`,
+        U.esc(r.action_name || r.action || ''),
+        U.esc(r.target || '—'),
+        U.esc(r.detail || ''),
+        U.esc(r.ip || '—'),
+      ]),
+      { empty: '没有符合条件的日志' }
+    )}
+    ${
+      pages > 1
+        ? `<div class="pager">
+            ${cur > 1 ? `<a class="mini" href="${link({ page: cur - 1 })}">上一页</a>` : '<span class="muted">上一页</span>'}
+            <span class="muted">第 ${cur} / ${pages} 页</span>
+            ${cur < pages ? `<a class="mini" href="${link({ page: cur + 1 })}">下一页</a>` : '<span class="muted">下一页</span>'}
+          </div>`
+        : ''
+    }
+  </section>
+  <p class="muted" style="font-size:12.5px">
+    说明：日志自本功能上线起实时记录。标「补录」的条目由历史单据、会话与领料记录回溯生成，
+    时间取自业务数据本身，不是当时的真实访问时间，仅用于补齐全貌。日志只增不改，不可删除。
+  </p>`;
+  return page(ctx, '系统日志', '/logs', body);
+}
+
 function passwordPage(ctx) {
   const body = `
   ${msgBar(ctx)}
@@ -2440,6 +2585,6 @@ module.exports = {
   retNewPage, retPickPage, retSave, retList, retItemsPage,
   stockPage, stockOutPage, docView, exportXlsx, aiChat, apiWeather,
   majorsPage, saveMajor, projectsPage, saveProject, teamsPage, saveTeam,
-  rolesPage, saveRole, createRole, usersPage, saveUser, passwordPage, savePassword,
+  rolesPage, saveRole, createRole, usersPage, saveUser, logsPage, passwordPage, savePassword,
   deleteBase,
 };

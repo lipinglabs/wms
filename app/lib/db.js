@@ -38,7 +38,10 @@ CREATE INDEX IF NOT EXISTS idx_docs_project ON docs(project_id);
 CREATE INDEX IF NOT EXISTS idx_items_doc ON doc_items(doc_id);
 CREATE INDEX IF NOT EXISTS idx_items_stock ON doc_items(stock_item_id);
 CREATE INDEX IF NOT EXISTS idx_moves_item ON stock_moves(item_id);
-CREATE INDEX IF NOT EXISTS idx_stock_proj ON stock_items(project_id, major_id);`;
+CREATE INDEX IF NOT EXISTS idx_stock_proj ON stock_items(project_id, major_id);
+CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_cat ON audit_logs(category, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_audit_ukey ON audit_logs(ukey);`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
@@ -126,6 +129,21 @@ CREATE TABLE IF NOT EXISTS doc_items(
 /* 表单令牌：同一次页面渲染只允许生成一张单据，防双击 / 网络重试造成重复单据 */
 CREATE TABLE IF NOT EXISTS form_tokens(
   token TEXT PRIMARY KEY, doc_id INTEGER, created_at TEXT
+);
+
+/* 系统日志：登录 + 操作。category: auth 登录 / op 业务操作。
+   src: live 实时记录 / backfill 由历史业务数据补录（时间取自业务表，非真实访问时间）。
+   ukey: 补录幂等键，重复执行补录不会产生重复行。 */
+CREATE TABLE IF NOT EXISTS audit_logs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  category TEXT NOT NULL,
+  action TEXT NOT NULL,
+  action_name TEXT,
+  result TEXT DEFAULT 'ok',
+  user_id INTEGER, username TEXT, user_name TEXT, role_name TEXT,
+  target TEXT, detail TEXT, ip TEXT,
+  src TEXT DEFAULT 'live', ukey TEXT
 );
 
 `;

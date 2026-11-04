@@ -31,6 +31,14 @@ function securityHeaders(req, res) {
 migrate();
 
 const { db: SQLDB, DATA_DIR } = require('./lib/db');
+const audit = require('./lib/audit');
+/* 首次启动：把开通日志之前的历史业务数据补录成日志（只做一次） */
+try {
+  const n = audit.backfill();
+  if (n) console.log(`[audit] 已补录历史日志 ${n} 条`);
+} catch (e) {
+  console.error('[audit] 补录失败', e && e.message);
+}
 const backup = require('./lib/backup');
 backup.schedule(SQLDB, DATA_DIR, __dirname, (m) => console.log(m));
 
@@ -185,6 +193,7 @@ const ROUTES = [
   { m: 'POST', p: /^\/roles\/save$/, h: R.saveRole, perm: 'sys.role' },
   { m: 'GET', p: /^\/users$/, h: R.usersPage, perm: 'sys.user' },
   { m: 'POST', p: /^\/users\/save$/, h: R.saveUser, perm: 'sys.user' },
+  { m: 'GET', p: /^\/logs$/, h: R.logsPage, perm: 'sys.log' },
 ];
 
 const server = http.createServer(async (req, res) => {
@@ -211,6 +220,8 @@ const server = http.createServer(async (req, res) => {
     query: Object.fromEntries(url.searchParams),
     user,
     body: {},
+    /* 本次请求的跳转痕迹：供日志取"提示语 + 是否失败" */
+    trace: { msg: null, err: false, loc: null },
     setCookie(name, value, opt = {}) {
       const parts = [`${name}=${encodeURIComponent(value)}`, 'Path=/'];
       if (opt.httpOnly !== false) parts.push('HttpOnly');
@@ -231,16 +242,27 @@ const server = http.createServer(async (req, res) => {
       res.end(buf);
     },
     redirect(loc) {
+      ctx.trace.loc = loc;
       res.writeHead(302, { Location: loc, 'Cache-Control': 'no-store' });
       res.end();
     },
     flash(loc, msg, type) {
+      ctx.trace.msg = msg || '';
+      ctx.trace.err = type === 'err';
       const sep = loc.includes('?') ? '&' : '?';
       const target = loc + sep + 'msg=' + encodeURIComponent(msg || '') + (type === 'err' ? '&err=1' : '');
       return ctx.redirect(target);
     },
     logout() {
       try { require('./lib/ai').forget(cookies.sid); } catch {}
+      if (user) {
+        audit.op(ctx, {
+          category: 'auth',
+          action: 'logout',
+          name: '退出登录',
+          detail: '退出登录',
+        });
+      }
       destroySession(cookies.sid);
       res.writeHead(302, { Location: '/login', 'Set-Cookie': 'sid=; Path=/; Max-Age=0; HttpOnly' });
       res.end();
@@ -259,11 +281,18 @@ const server = http.createServer(async (req, res) => {
       if (r.perm) {
         const ok = Array.isArray(r.perm) ? r.perm.some((p) => can(user, p)) : can(user, r.perm);
         if (!ok) {
+          audit.denied(ctx, pathname);
           return ctx.html(U.layout({ title: '无权限', user, body: '<section class="panel">你没有访问该页面的权限。</section>' }), 403);
         }
       }
       if (req.method === 'POST') ctx.body = await parseBody(req);
-      return await r.h(ctx, m);
+      const out = await r.h(ctx, m);
+      /* 所有"改变数据"的 POST 自动记一笔；/login 由业务代码单独记（含失败原因），
+         /api/* 属于查询类（AI 问答），不入操作日志 */
+      if (req.method === 'POST' && pathname !== '/login' && !pathname.startsWith('/api/')) {
+        audit.record(ctx, pathname, ctx.trace);
+      }
+      return out;
     }
     ctx.html(U.layout({ title: '页面不存在', user, body: '<section class="panel">页面不存在。<a href="/">返回工作台</a></section>' }), 404);
   } catch (e) {
