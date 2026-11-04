@@ -1,0 +1,24 @@
+# 数据与备份（绝不提交）
+app/data/
+data/
+*.db
+*.db-wal
+*.db-shm
+backup/
+*.tar.gz
+
+# 本地配置
+.env
+.env.local
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时产物
+node_modules/
+testdata/
+restore-drill/
+*.log
+*.tmp

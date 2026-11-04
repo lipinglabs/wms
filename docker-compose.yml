@@ -1,0 +1,17 @@
+services:
+  wms:
+    build: .
+    image: wms:latest
+    container_name: wms
+    restart: unless-stopped
+    ports:
+      - "18091:18091"
+    volumes:
+      - ./data:/data
+    environment:
+      TZ: Asia/Shanghai
+      # AI 助手（可选，不配则自动降级）
+      # WMS_DIFY_URL: http://192.168.1.10:8080
+      # WMS_DIFY_KEY: app-xxxxxxxx
+      # 异地备份（可选）
+      # WMS_BACKUP_REMOTE: user@your-server
